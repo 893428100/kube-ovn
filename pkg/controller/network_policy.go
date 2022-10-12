@@ -192,11 +192,6 @@ func (c *Controller) handleUpdateNp(key string) error {
 	egressAllowAsNamePrefix := strings.Replace(fmt.Sprintf("%s.%s.egress.allow", np.Name, np.Namespace), "-", ".", -1)
 	egressExceptAsNamePrefix := strings.Replace(fmt.Sprintf("%s.%s.egress.except", np.Name, np.Namespace), "-", ".", -1)
 
-	// delete existing pg to update acl
-	if err = c.ovnLegacyClient.DeletePortGroup(pgName); err != nil {
-		klog.Errorf("failed to delete port group %s before networkpolicy update process, %v", pgName, err)
-	}
-
 	if err = c.ovnLegacyClient.CreateNpPortGroup(pgName, np.Namespace, np.Name); err != nil {
 		klog.Errorf("failed to create port group for np %s, %v", key, err)
 		return err
@@ -238,12 +233,6 @@ func (c *Controller) handleUpdateNp(key string) error {
 			klog.Errorf("failed to set netpol svc, %v", err)
 			return err
 		}
-	}
-
-	// before update or add ingress info,we should first delete acl and address_set
-	if err = c.ovnLegacyClient.DeleteACL(pgName, "to-lport"); err != nil {
-		klog.Errorf("failed to delete np %s ingress acls, %v", key, err)
-		return err
 	}
 
 	ingressAsNames, err := c.ovnLegacyClient.ListNpAddressSet(np.Namespace, np.Name, "ingress")
@@ -385,12 +374,6 @@ func (c *Controller) handleUpdateNp(key string) error {
 				return err
 			}
 		}
-	}
-
-	// before update or add egress info, we should first delete acl and address_set
-	if err = c.ovnLegacyClient.DeleteACL(pgName, "from-lport"); err != nil {
-		klog.Errorf("failed to delete np %s egress acls, %v", key, err)
-		return err
 	}
 
 	egressAsNames, err := c.ovnLegacyClient.ListNpAddressSet(np.Namespace, np.Name, "egress")

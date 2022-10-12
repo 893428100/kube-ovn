@@ -1614,6 +1614,11 @@ func (c LegacyClient) CreateNpAddressSet(asName, npNamespace, npName, direction 
 func (c LegacyClient) CreateIngressACL(pgName, asIngressName, asExceptName, svcAsName, protocol string, npp []netv1.NetworkPolicyPort, logEnable bool) error {
 	var allowArgs, ovnArgs []string
 
+	if err := c.DeleteACL(pgName, "to-lport"); err != nil {
+		klog.Errorf("failed to delete np %s ingress acls, %v", pgName, err)
+		return err
+	}
+
 	ipSuffix := "ip4"
 	if protocol == kubeovnv1.ProtocolIPv6 {
 		ipSuffix = "ip6"
@@ -1648,6 +1653,11 @@ func (c LegacyClient) CreateIngressACL(pgName, asIngressName, asExceptName, svcA
 
 func (c LegacyClient) CreateEgressACL(pgName, asEgressName, asExceptName, protocol string, npp []netv1.NetworkPolicyPort, portSvcName string, logEnable bool) error {
 	var allowArgs, ovnArgs []string
+
+	if err := c.DeleteACL(pgName, "from-lport"); err != nil {
+		klog.Errorf("failed to delete np %s egress acls, %v", pgName, err)
+		return err
+	}
 
 	ipSuffix := "ip4"
 	if protocol == kubeovnv1.ProtocolIPv6 {
