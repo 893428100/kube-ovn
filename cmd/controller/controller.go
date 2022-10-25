@@ -23,17 +23,20 @@ import (
 func CmdMain() {
 	defer klog.Flush()
 
+	// 版本handler注册版本信息输出
 	stopCh := signals.SetupSignalHandler()
 	klog.Infof(versions.String())
 
 	controller.InitClientGoMetrics()
 	controller.InitWorkQueueMetrics()
 	util.InitKlogMetrics()
+	// 配置解析
 	config, err := controller.ParseFlags()
 	if err != nil {
 		klog.Fatalf("parse config failed %v", err)
 	}
 
+	// 权限检查
 	if err := checkPermission(config); err != nil {
 		klog.Fatalf("failed to check permission %v", err)
 	}
@@ -41,6 +44,7 @@ func CmdMain() {
 	go loopOvnNbctlDaemon(config)
 	go func() {
 		mux := http.NewServeMux()
+		// 暴露的metrics接口，本质是个http server
 		mux.Handle("/metrics", promhttp.Handler())
 		if config.EnablePprof {
 			mux.HandleFunc("/debug/pprof/", pprof.Index)
@@ -60,6 +64,7 @@ func CmdMain() {
 		klog.Fatal(server.ListenAndServe())
 	}()
 
+	// 控制器的运行
 	ctl := controller.NewController(config)
 	ctl.Run(stopCh)
 }

@@ -178,7 +178,9 @@ type Controller struct {
 }
 
 // NewController returns a new ovn controller
+// controller初始化
 func NewController(config *Configuration) *Controller {
+	// controller控制器
 	utilruntime.Must(kubeovnv1.AddToScheme(scheme.Scheme))
 	klog.V(4).Info("Creating event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
@@ -203,6 +205,8 @@ func NewController(config *Configuration) *Controller {
 			listOption.AllowWatchBookmarks = true
 		}))
 
+	// watch-list的资源：Vpcs VpcNatGateways Subnets IPs Vips IptablesEIPs IptablesFIPRules IptablesDnatRules
+	// IptablesSnatRules Vlans ProviderNetworks SecurityGroups Pods Namespaces Nodes Services Endpoints ConfigMaps
 	vpcInformer := kubeovnInformerFactory.Kubeovn().V1().Vpcs()
 	vpcNatGatewayInformer := kubeovnInformerFactory.Kubeovn().V1().VpcNatGateways()
 	subnetInformer := kubeovnInformerFactory.Kubeovn().V1().Subnets()
@@ -222,6 +226,7 @@ func NewController(config *Configuration) *Controller {
 	endpointInformer := informerFactory.Core().V1().Endpoints()
 	configMapInformer := cmInformerFactory.Core().V1().ConfigMaps()
 
+	// controller实例
 	controller := &Controller{
 		config:          config,
 		vpcs:            &sync.Map{},
@@ -351,6 +356,7 @@ func NewController(config *Configuration) *Controller {
 		klog.Fatal(err)
 	}
 
+	// 注册事件处理函数，比如如果有pod事件，add事件就调用enqueueAddPod，其实就是取出pod名称放入队列
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    controller.enqueueAddPod,
 		DeleteFunc: controller.enqueueDeletePod,
@@ -495,14 +501,17 @@ func NewController(config *Configuration) *Controller {
 // as syncing informer caches and starting workers. It will block until stopCh
 // is closed, at which point it will shutdown the workqueue and wait for
 // workers to finish processing their current work items.
+// controller 运行
 func (c *Controller) Run(stopCh <-chan struct{}) {
 	defer c.shutdown()
 	klog.Info("Starting OVN controller")
 
 	// wait for becoming a leader
+	// 选举，为了调用k8s的基本库，为了高可用
 	c.leaderElection()
 
 	// Wait for the caches to be synced before starting workers
+	//watch-list开始工作
 	c.informerFactory.Start(stopCh)
 	c.cmInformerFactory.Start(stopCh)
 	c.kubeovnInformerFactory.Start(stopCh)
@@ -523,6 +532,8 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		cacheSyncs = append(cacheSyncs, c.switchLBRuleSynced, c.vpcDnsSynced)
 	}
 
+	// 等待资源缓存同步完成，必须等这个完成才能往下走。
+	// controller的常规开发模式
 	if ok := cache.WaitForCacheSync(stopCh, cacheSyncs...); !ok {
 		klog.Fatalf("failed to wait for caches to sync")
 	}
@@ -534,19 +545,23 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		klog.Fatalf("failed to set NB_Global option use_ct_inv_match to false: %v", err)
 	}
 
+	// 默认vpc的初始化处理
 	if err := c.InitDefaultVpc(); err != nil {
 		klog.Fatalf("failed to init default vpc: %v", err)
 	}
 
+	// vlan网络，provider网络的初始化处理
 	if err := c.InitOVN(); err != nil {
 		klog.Fatalf("failed to init ovn resource: %v", err)
 	}
 
 	// sync ip crd before initIPAM since ip crd will be used to restore vm and statefulset pod in initIPAM
+	// 在initIPAM之前同步ip-crd，ip-crd将用于恢复initIPAM中的vm和statefulset pod
 	if err := c.initSyncCrdIPs(); err != nil {
 		klog.Errorf("failed to sync crd ips: %v", err)
 	}
 
+	// ip地址管理模块的初始化，包括从k8s的etcd数据里恢复ip分配的数据，controller重启需要
 	if err := c.InitIPAM(); err != nil {
 		klog.Fatalf("failed to init ipam: %v", err)
 	}
@@ -559,11 +574,13 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		klog.Fatalf("failed to initialize node routes: %v", err)
 	}
 
+	// 安全组功能，1.8版本引入
 	if err := c.initDenyAllSecurityGroup(); err != nil {
 		klog.Fatalf("failed to init 'deny_all' security group: %v", err)
 	}
 
 	// remove resources in ovndb that not exist any more in kubernetes resources
+	// 一些残留资源的处理，比如pod已经删除但是ovn port还未删除掉的
 	if err := c.gc(); err != nil {
 		klog.Fatalf("gc failed: %v", err)
 	}
@@ -587,7 +604,9 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	}
 
 	// start workers to do all the network operations
+	// 关键的开启worker goroutine
 	c.startWorkers(stopCh)
+	// 等待退出信号
 	<-stopCh
 	klog.Info("Shutting down workers")
 }
