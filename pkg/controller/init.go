@@ -61,11 +61,14 @@ func (c *Controller) InitOVN() error {
 	return nil
 }
 
+// 默认vpc的初始化处理
 func (c *Controller) InitDefaultVpc() error {
+	// 判断默认vpc是否存在
 	cachedVpc, err := c.vpcsLister.Get(util.DefaultVpc)
 	if err != nil {
 		cachedVpc = &kubeovnv1.Vpc{}
 		cachedVpc.Name = util.DefaultVpc
+		// 不存在则进行创建
 		cachedVpc, err = c.config.KubeOvnClient.KubeovnV1().Vpcs().Create(context.Background(), cachedVpc, metav1.CreateOptions{})
 		if err != nil {
 			klog.Errorf("init default vpc failed: %v", err)
@@ -73,6 +76,7 @@ func (c *Controller) InitDefaultVpc() error {
 		}
 	}
 	vpc := cachedVpc.DeepCopy()
+	// 赋值VPC的状态信息
 	vpc.Status.DefaultLogicalSwitch = c.config.DefaultLogicalSwitch
 	vpc.Status.Router = c.config.ClusterRouter
 	if c.config.EnableLb {
@@ -88,6 +92,7 @@ func (c *Controller) InitDefaultVpc() error {
 	if err != nil {
 		return err
 	}
+	// Patch更新默认VPC的状态信息
 	_, err = c.config.KubeOvnClient.KubeovnV1().Vpcs().Patch(context.Background(), vpc.Name, types.MergePatchType, bytes, metav1.PatchOptions{}, "status")
 	if err != nil {
 		klog.Errorf("init default vpc failed: %v", err)

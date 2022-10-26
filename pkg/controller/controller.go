@@ -357,6 +357,8 @@ func NewController(config *Configuration) *Controller {
 	}
 
 	// 注册事件处理函数，比如如果有pod事件，add事件就调用enqueueAddPod，其实就是取出pod名称放入队列
+	// controller作为资源控制器，会创建很多的worker（go routine）来处理对应资源如VPC资源的创建、更新、删除事件。
+	// 每个worker其实都有自己的工作队列，当资源出现新的事件时，就将事件放入队列中，后续worker从队列中取出处理。
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    controller.enqueueAddPod,
 		DeleteFunc: controller.enqueueDeletePod,
@@ -386,6 +388,7 @@ func NewController(config *Configuration) *Controller {
 		UpdateFunc: controller.enqueueUpdateEndpoint,
 	})
 
+	// VPC资源的事件入队注册
 	vpcInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    controller.enqueueAddVpc,
 		UpdateFunc: controller.enqueueUpdateVpc,
@@ -545,6 +548,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		klog.Fatalf("failed to set NB_Global option use_ct_inv_match to false: %v", err)
 	}
 
+	// Controller的关键初始化
 	// 默认vpc的初始化处理
 	if err := c.InitDefaultVpc(); err != nil {
 		klog.Fatalf("failed to init default vpc: %v", err)
@@ -604,7 +608,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	}
 
 	// start workers to do all the network operations
-	// 关键的开启worker goroutine
+	// 关键的开启worker goroutine，worker创建
 	c.startWorkers(stopCh)
 	// 等待退出信号
 	<-stopCh
@@ -694,11 +698,14 @@ func (c *Controller) shutdown() {
 	c.syncSgPortsQueue.ShutDown()
 }
 
+// worker创建
 func (c *Controller) startWorkers(stopCh <-chan struct{}) {
 	klog.Info("Starting workers")
 
+	// 创建一个go routine,用来处理VPC的add/update事件
 	go wait.Until(c.runAddVpcWorker, time.Second, stopCh)
 
+	// 其他worker对应其他事件
 	go wait.Until(c.runAddOrUpdateVpcNatGwWorker, time.Second, stopCh)
 	go wait.Until(c.runInitVpcNatGwWorker, time.Second, stopCh)
 	go wait.Until(c.runDelVpcNatGwWorker, time.Second, stopCh)
@@ -709,6 +716,7 @@ func (c *Controller) startWorkers(stopCh <-chan struct{}) {
 	go wait.Until(c.runUpdateVpcSubnetWorker, time.Second, stopCh)
 
 	// add default/join subnet and wait them ready
+	// 添加default和join子网
 	go wait.Until(c.runAddSubnetWorker, time.Second, stopCh)
 	go wait.Until(c.runAddVlanWorker, time.Second, stopCh)
 	go wait.Until(c.runAddNamespaceWorker, time.Second, stopCh)

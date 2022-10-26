@@ -20,12 +20,15 @@ import (
 	"github.com/kubeovn/kube-ovn/pkg/util"
 )
 
+// add事件
 func (c *Controller) enqueueAddVpc(obj interface{}) {
+	// 是不leader，不进行处理事件
 	if !c.isLeader() {
 		return
 	}
 	var key string
 	var err error
+	// 拼接标识资源的字符串，如“$namespace/$name”
 	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
 		utilruntime.HandleError(err)
 		return
@@ -33,6 +36,7 @@ func (c *Controller) enqueueAddVpc(obj interface{}) {
 	klog.V(3).Infof("enqueue add vpc %s", key)
 	vpc := obj.(*kubeovnv1.Vpc)
 	if _, ok := vpc.Labels[util.VpcExternalLabel]; !ok {
+		// 非外部VPC的，直接将key入队到addOrUpdateVpcQueue队列中
 		c.addOrUpdateVpcQueue.Add(key)
 	}
 }
@@ -319,10 +323,13 @@ func (c *Controller) addLoadBalancer(vpc string) (*VpcLoadBalancer, error) {
 	return vpcLbConfig, nil
 }
 
+// 关键处理函数 专门的worker处理VPC资源的add/update事件
 func (c *Controller) handleAddOrUpdateVpc(key string) error {
 	// get latest vpc info
+	// 取出VPC资源，根据名称从缓存中获取资源信息，这个信息就是etcd中落盘信息
 	cachedVpc, err := c.config.KubeOvnClient.KubeovnV1().Vpcs().Get(context.Background(), key, metav1.GetOptions{})
 	if err != nil {
+		// 如果没有找到表示资源已经被删除，忽略该事件
 		if k8serrors.IsNotFound(err) {
 			return nil
 		}
@@ -330,10 +337,13 @@ func (c *Controller) handleAddOrUpdateVpc(key string) error {
 	}
 	vpc := cachedVpc.DeepCopy()
 
+	// 由于etcd中落盘的信息是用户创建的，那么比如路由、网段什么的可能填错，这里进行校验处理
 	if err = formatVpc(vpc, c); err != nil {
 		klog.Errorf("failed to format vpc: %v", err)
 		return err
 	}
+	// 实际处理逻辑，关键点！在ovn创建对应的逻辑路由器
+	// 默认VPC的关键操作就是创建ovn的逻辑路由器，custom VPC则还多了一个静态路由的处理。
 	if err = c.createVpcRouter(key); err != nil {
 		return err
 	}
@@ -365,18 +375,21 @@ func (c *Controller) handleAddOrUpdateVpc(key string) error {
 	}
 
 	// handle static route
+	// 获取ovn中当前存在的静态路由
 	existRoute, err := c.ovnLegacyClient.GetStaticRouteList(vpc.Name)
 	if err != nil {
 		klog.Errorf("failed to get vpc %s static route list, %v", vpc.Name, err)
 		return err
 	}
 
+	// 对比用户指定的静态路由，获得哪些路由是新增的哪些是过时的
 	routeNeedDel, routeNeedAdd, err := diffStaticRoute(existRoute, vpc.Spec.StaticRoutes)
 	if err != nil {
 		klog.Errorf("failed to diff vpc %s static route, %v", vpc.Name, err)
 		return err
 	}
 	for _, item := range routeNeedDel {
+		// 需要删除的路由就调用ovn删除接口
 		if err = c.ovnLegacyClient.DeleteStaticRoute(item.CIDR, vpc.Name); err != nil {
 			klog.Errorf("del vpc %s static route failed, %v", vpc.Name, err)
 			return err
@@ -384,6 +397,7 @@ func (c *Controller) handleAddOrUpdateVpc(key string) error {
 	}
 
 	for _, item := range routeNeedAdd {
+		// 新增路由就调用ovn新增接口
 		if err = c.ovnLegacyClient.AddStaticRoute(convertPolicy(item.Policy), item.CIDR, item.NextHopIP, vpc.Name, util.NormalRouteType); err != nil {
 			klog.Errorf("add static route to vpc %s failed, %v", vpc.Name, err)
 			return err
@@ -432,6 +446,7 @@ func (c *Controller) handleAddOrUpdateVpc(key string) error {
 	if err != nil {
 		return err
 	}
+	// 上述更新了VPC一些资源信息，因此需要进行状态更新
 	vpc, err = c.config.KubeOvnClient.KubeovnV1().Vpcs().Patch(context.Background(), vpc.Name, types.MergePatchType, bytes, metav1.PatchOptions{}, "status")
 	if err != nil {
 		return err
@@ -621,6 +636,7 @@ func (c *Controller) processNextUpdateStatusVpcWorkItem() bool {
 }
 
 func (c *Controller) processNextAddVpcWorkItem() bool {
+	// 从工作队列addOrUpdateVpcQueue取出有add/update事件的VPC标识
 	obj, shutdown := c.addOrUpdateVpcQueue.Get()
 	if shutdown {
 		return false
@@ -635,6 +651,7 @@ func (c *Controller) processNextAddVpcWorkItem() bool {
 			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
 			return nil
 		}
+		// handleAddOrUpdateVpc 关键处理函数
 		if err := c.handleAddOrUpdateVpc(key); err != nil {
 			// c.addOrUpdateVpcQueue.AddRateLimited(key)
 			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
@@ -644,6 +661,7 @@ func (c *Controller) processNextAddVpcWorkItem() bool {
 	}(obj)
 
 	if err != nil {
+		// 如果处理失败，重试重新入队，这里做了重新入队的速率限制
 		utilruntime.HandleError(err)
 		c.addOrUpdateVpcQueue.AddRateLimited(obj)
 		return true
@@ -702,17 +720,21 @@ func (c *Controller) getVpcSubnets(vpc *kubeovnv1.Vpc) (subnets []string, defaul
 }
 
 // createVpcRouter create router to connect logical switches in vpc
+// 逻辑路由器的创建
 func (c *Controller) createVpcRouter(lr string) error {
+	// 调用ovn接口获取所有逻辑路由器资源
 	lrs, err := c.ovnLegacyClient.ListLogicalRouter(c.config.EnableExternalVpc)
 	if err != nil {
 		return err
 	}
 	klog.Infof("exists routers %v", lrs)
 	for _, r := range lrs {
+		// 如果lr已存在，直接返回
 		if lr == r {
 			return nil
 		}
 	}
+	// 调用ovn-nbctl lr-add创建对应的逻辑路由器
 	return c.ovnLegacyClient.CreateLogicalRouter(lr)
 }
 
